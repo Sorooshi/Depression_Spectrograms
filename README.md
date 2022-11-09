@@ -1,1 +1,1 @@
-# -Depression Prediciton using Spectrograms and AI
+# Depression Severity Prediciton using Spectrograms and AI
