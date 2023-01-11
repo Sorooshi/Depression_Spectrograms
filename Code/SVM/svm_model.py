@@ -20,7 +20,7 @@ def prepare_data(df, split=True):
 
     scaler = MinMaxScaler()
     if split:
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=True)
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, shuffle=True, random_state=SEED)
         X_train = scaler.fit_transform(X_train)
         X_test = scaler.transform(X_test)
         return X_train, X_test, y_train, y_test
@@ -54,9 +54,9 @@ def train(X_train, y_train):
 def calulate_score(opt, X_test, y_test):
     # precision, recall, f1
     scorings = {
-        'precision': 'precision_micro',
-        'recall': 'recall_micro',
-        'f1': 'f1_micro',
+        'precision': 'precision_weighted',
+        'recall': 'recall_weighted',
+        'f1': 'f1_weighted',
     }
     scores = cross_validate(
         opt.best_estimator_,
@@ -67,7 +67,7 @@ def calulate_score(opt, X_test, y_test):
     )
 
     # specificity
-    scorer = make_scorer(specificity_score, average='micro')
+    scorer = make_scorer(specificity_score, average='weighted')
     spec_score = cross_val_score(
         opt.best_estimator_,
         X_test, y_test,
@@ -75,15 +75,15 @@ def calulate_score(opt, X_test, y_test):
         scoring=scorer,
         n_jobs=3
     )
+    scores['test_specificity'] = spec_score
 
     # clean scores
     scores.pop('fit_time')
     scores.pop('score_time')
 
-    mean_scores = dict(map(lambda kv: (kv[0], np.mean(kv[1])), scores.items()))
-    mean_scores['test_specificity'] = np.mean(spec_score)
+    summary_stats = dict(map(lambda kv: (kv[0], {'mean': np.mean(kv[1]), 'std': np.std(kv[1])}), scores.items()))
 
-    return mean_scores
+    return summary_stats
 
 
 @contextmanager
