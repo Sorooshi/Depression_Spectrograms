@@ -1,13 +1,14 @@
 import pandas as pd
 import os
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, KFold
 from imblearn.over_sampling import RandomOverSampler
+from collections import defaultdict
 
 from torch.utils.data import Dataset, DataLoader
 from torchvision.io import read_image
 from torchvision import transforms
 
-from DCNN.config import *
+from config.config import *
 
 
 def get_patient_audio(row, data_folder=os.path.join(DATA_PATH, 'wav files')):
@@ -74,10 +75,6 @@ def get_domain_audio(row, domain):
     return files[0] if len(files) else None
 
 
-# for domain in task_mapping:
-#     df[f'audio.{domain}'] = df.apply(get_domain_audio, axis=1, domain=domain)
-
-
 def get_patient_fragments(row):
     fragments = []
     for audio in row.audio:
@@ -93,8 +90,8 @@ def process_dataframe(df):
     df['audio.fragment'] = df.apply(get_patient_fragments, axis=1)
 
     # drop redundant columns
-    drop_cols = ['audio', 'audio.narrative', 'audio.story', 'audio.instruction']
-    df.drop(drop_cols, axis=1, inplace=True)
+    drop_cols = ['audio']
+    df = df.drop(drop_cols, axis=1)
 
     # create dataframe row for each audio fragment
     df = df.explode('audio.fragment', ignore_index=True)
@@ -118,10 +115,6 @@ def split_data(df):
         random_state=SEED)
 
     return df_train, df_test, df_val
-
-
-# dataframes = dict(zip([TRAIN, TEST, VAL],
-#                       list(map(process_dataframe, split_data(df)))))
 
 
 # Perform random oversampling until number of depressed and non-depressed patients is equal
@@ -149,7 +142,10 @@ class AudioDataset(Dataset):
         label = self.label_data_df.iloc[idx]['depression.symptoms']
         depressed = self.label_data_df.iloc[idx]['depressed']
         img_name = self.label_data_df.iloc[idx]['audio.fragment']
-        img_path = os.path.join(self.img_dir, img_name)
+        try:
+            img_path = os.path.join(self.img_dir, img_name)
+        except:
+            print(img_name)
         img = read_image(img_path)
         if self.transform:
             img = self.transform(img)
@@ -185,9 +181,9 @@ def create_train_test_eval_processors(dataframes, resize=(80, 80)):
     }
 
     datasets = {
-        TRAIN: AudioDataset(dataframes[TRAIN], 'spec_images', transform=data_transforms[TRAIN]),
-        TEST: AudioDataset(dataframes[TEST], 'spec_images', transform=data_transforms[TEST]),
-        VAL: AudioDataset(dataframes[VAL], 'spec_images', transform=data_transforms[VAL])
+        TRAIN: AudioDataset(dataframes[TRAIN], IMAGES_PATH, transform=data_transforms[TRAIN]),
+        TEST: AudioDataset(dataframes[TEST], IMAGES_PATH, transform=data_transforms[TEST]),
+        VAL: AudioDataset(dataframes[VAL], IMAGES_PATH, transform=data_transforms[VAL])
     }
 
     rng = torch.Generator().manual_seed(SEED)
@@ -204,3 +200,28 @@ def create_train_test_eval_processors(dataframes, resize=(80, 80)):
     }
 
     return datasets, dataloaders, dataset_sizes
+
+
+def k_fold_split(df, n_splits=5):
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=SEED)
+
+    folds = defaultdict(dict)
+
+    for i, (train_index, test_index) in enumerate(kf.split(df)):
+        train_df = df.iloc[train_index]
+        test_df = df.iloc[test_index]
+        train_df, val_df = train_test_split(
+            train_df,
+            test_size=0.1,
+            stratify=train_df['depression.symptoms'],
+            random_state=SEED)
+
+        dataframes = dict(zip([TRAIN, TEST, VAL],
+                              map(process_dataframe, [train_df, test_df, val_df])))
+        datasets, dataloaders, dataset_sizes = create_train_test_eval_processors(dataframes)
+
+        folds[i]['datasets'] = datasets
+        folds[i]['dataloaders'] = dataloaders
+        folds[i]['dataset_sizes'] = dataset_sizes
+
+    return folds

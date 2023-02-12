@@ -9,13 +9,13 @@ from functools import partial, update_wrapper
 from sklearn.metrics import accuracy_score, precision_score, f1_score
 from imblearn.metrics import specificity_score
 
-from data_processing import dataloaders, dataset_sizes, data_transforms, df_test_all_fragments
-from model import dcnn, dcnn2, dcnn3
-
-from config import *
+from config.config import *
 
 
-def eval_model(model, criterion):
+"""Single model evaluation"""
+
+
+def eval_model(model, criterion, dataloaders):
     """
     Evaluate single model accuracy
 
@@ -25,6 +25,8 @@ def eval_model(model, criterion):
     since = time.time()
     loss_test = 0
     acc_test = 0
+
+    dataset_sizes = dict(map(lambda item: (item[0], len(item[1].dataset)), dataloaders.items()))
 
     test_batches = len(dataloaders[TEST])
     print("Evaluating model")
@@ -80,6 +82,9 @@ def eval_model(model, criterion):
     print('-' * 10)
 
 
+"""Evaluation for ensemble models"""
+
+
 def maj_vote(outputs):
     """
     Return most common value based on smart majority vote
@@ -110,7 +115,7 @@ def predict_ensemble(data, *models):
     return groupped_preds
 
 
-def eval_ensemble(*models, metrics=[]):
+def eval_ensemble(*models, metrics=[], dataloaders):
     """
     Evaluate metrics for ensemble of models
     """
@@ -183,17 +188,17 @@ class FragmentAudioDataset(Dataset):
         return frag_data, label, depressed
 
 
-all_fragments_test_dataset = FragmentAudioDataset(
-    df_test_all_fragments,
-    'spec_images',
-    transform=data_transforms[TEST]
-)
-
-all_fragments_test_dataloader = DataLoader(
-    all_fragments_test_dataset,
-    batch_size=1,   # setting to value other than 1 will lead to an error
-    batch_sampler=None
-)
+# all_fragments_test_dataset = FragmentAudioDataset(
+#     df_test_all_fragments,
+#     'spec_images',
+#     transform=data_transforms[TEST]
+# )
+#
+# all_fragments_test_dataloader = DataLoader(
+#     all_fragments_test_dataset,
+#     batch_size=1,   # setting to value other than 1 will lead to an error
+#     batch_sampler=None
+# )
 
 
 def eval_ensemble_all_fragments(*models):
@@ -241,6 +246,59 @@ def eval_ensemble_all_fragments(*models):
     print('-' * 10)
 
 
+"""Evaluation based on cross validation"""
+
+
+def metrics_ci(metric, y_true, y_preds):
+    metrics_vals = []
+    for single_model_true, single_model_pred in zip(y_true, y_preds):
+        metrics_vals.append(metric(single_model_true, single_model_pred))
+    metrics_vals = np.array(metrics_vals)
+
+    return metrics_vals.mean(), metrics_vals.std()
+
+
+def eval_average(models, dataloaders, metrics=[]):
+    assert metrics, "Specify metrics to calculate"
+
+    since = time.time()
+
+    y_true, y_pred = [[] for _ in range(len(models))], [[] for _ in range(len(models))]
+
+    print("Evaluating model")
+    print('-' * 10)
+
+    for model_num, model in enumerate(models):
+        dataloaders_split = dataloaders[model_num]
+        test_batches = len(dataloaders_split[TEST])
+
+        for i, data in enumerate(dataloaders_split[TEST]):
+            print("\rTest batch {}/{}".format(i, test_batches), end='', flush=True)
+
+            images, meta, labels, depressed = data
+            images, meta = map(lambda x: x.to(DEVICE), [images, meta])
+            labels = labels.data.numpy()
+
+            model.eval()
+            with torch.no_grad():
+                outputs = model(images, meta)
+
+            preds = torch.argmax(outputs, dim=1).data.cpu().numpy()
+
+            y_true[model_num].extend(labels)
+            y_pred[model_num].extend(preds)
+
+            del images, meta, labels, preds
+            torch.cuda.empty_cache()
+
+    elapsed_time = time.time() - since
+    print()
+    print("Evaluation completed in {:.0f}m {:.0f}s".format(elapsed_time // 60, elapsed_time % 60))
+    for metric in metrics:
+        print("{}: mean {:.4f}, std {:.4f}".format(metric.__name__, *metrics_ci(metric, y_true, y_pred)))
+    print('-' * 10)
+
+
 def wrapped_partial(func, *args, **kwargs):
     """
     Helps initialize function's parameters and keep dunder attributes
@@ -251,9 +309,11 @@ def wrapped_partial(func, *args, **kwargs):
     return partial_func
 
 
-accuracy = wrapped_partial(accuracy_score)
-precision = wrapped_partial(precision_score, average='weighted')
-f1 = wrapped_partial(f1_score, average='weighted')
-specificity = wrapped_partial(specificity_score, average='weighted')
+def cross_val_metrics():
+    accuracy = wrapped_partial(accuracy_score)
+    precision = wrapped_partial(precision_score, average='weighted', zero_division=0)
+    f1 = wrapped_partial(f1_score, average='weighted', zero_division=0)
+    specificity = wrapped_partial(specificity_score, average='weighted')
 
-eval_ensemble(dcnn, dcnn2, dcnn3, metrics=[accuracy, precision, f1, specificity])
+    return [accuracy, precision, f1, specificity]
+
