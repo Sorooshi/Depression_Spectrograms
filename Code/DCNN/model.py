@@ -1,11 +1,10 @@
 import time
 import copy
 from tqdm import tqdm
+from collections import defaultdict
 
 import torch.nn as nn
 from torch.optim import Adam, lr_scheduler
-
-from data_processing import dataloaders, dataset_sizes
 
 from config import *
 
@@ -55,7 +54,7 @@ class DCNN(nn.Module):
         return mixed
 
 
-def train_model(model, criterion, optimizer, scheduler, num_epochs=10):
+def train_model(model, criterion, optimizer, scheduler, dataloaders, num_epochs=20):
     since = time.time()
 
     patience = 3
@@ -66,12 +65,17 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=10):
     best_loss = 1.0
     best_acc = 0
 
+    dataset_sizes = dict(map(lambda item: (item[0], len(item[1].dataset)), dataloaders.items()))
+
+    metrics = defaultdict(list)
+
     batch_num = {
         TRAIN: len(dataloaders[TRAIN]),
         VAL: len(dataloaders[VAL])
     }
 
     for epoch in tqdm(range(num_epochs)):
+        metrics['Epoch'].append(epoch)
 
         for stage in [TRAIN, VAL]:
             model.train(stage == TRAIN)
@@ -151,7 +155,7 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=10):
     print("Best acc: {:.4f}".format(best_acc))
 
     model.load_state_dict(best_model_wts)
-    return model, best_acc
+    return model
 
 
 dcnn = DCNN(output_dim=4).to(DEVICE)
