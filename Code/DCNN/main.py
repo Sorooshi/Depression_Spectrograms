@@ -17,10 +17,15 @@ def main():
         choices=list(ModelTrainTerminate),
         default=ModelTrainTerminate.RET,
         type=ModelTrainTerminate,
-        help='save or evaluate the model or do both. Only used for single model train mode'
+        help='save | eval | both | ret. Save or evaluate the model or do both, ret used to pass the model further. '
+             'Training types other than single only support ret and eval'
     )
 
     args = parser.parse_args()
+    if args.m != 'single':
+        assert args.s in [ModelTrainTerminate.RET, ModelTrainTerminate.EVAL], \
+            "Only ret or eval terminations can be used for this training type"
+
     match args.m:
         case 'single':
             single_model_train_workflow(args.s)
