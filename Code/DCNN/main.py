@@ -1,16 +1,8 @@
 import argparse
-from enum import Enum
 
 from workflows.single_model import single_model_train_workflow
-
-
-class ModelTrainTerminate(Enum):
-    SAVE = 'save'
-    EVAL = 'eval'
-    BOTH = 'both'
-
-
-def setup
+from workflows.cross_validate_multiple_models import cross_validate_train_workflow
+from config.config import ModelTrainTerminate
 
 
 def main():
@@ -23,7 +15,7 @@ def main():
     parser.add_argument(
         '-s',
         choices=list(ModelTrainTerminate),
-        default=ModelTrainTerminate.BOTH,
+        default=ModelTrainTerminate.RET,
         type=ModelTrainTerminate,
         help='save or evaluate the model or do both. Only used for single model train mode'
     )
@@ -31,10 +23,9 @@ def main():
     args = parser.parse_args()
     match args.m:
         case 'single':
-            print(args.s)
             single_model_train_workflow(args.s)
         case 'cv':
-            pass
+            cross_validate_train_workflow(args.s)
         case 'ensemble':
             pass
 
