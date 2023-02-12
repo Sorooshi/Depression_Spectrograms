@@ -3,71 +3,136 @@ import os
 from sklearn.model_selection import train_test_split
 from imblearn.over_sampling import RandomOverSampler
 
-import torch
 from torch.utils.data import Dataset, DataLoader
 from torchvision.io import read_image
 from torchvision import transforms
 
-from config import *
+from DCNN.config import *
 
 
-df = pd.read_pickle('svm_df.pkl')
+def get_patient_audio(row, data_folder=os.path.join(DATA_PATH, 'wav files')):
+    """
+    Find patient's recordings in recordings folder
+    """
+    key = row.ID
+    audio_files = []
+    for filename in os.listdir(data_folder):
+        if filename.find(key) != -1:
+            audio_files.append(filename)
+    return audio_files
 
 
-# Below we create new dataframes, with each row containig a link to
-# audio fragment image of whole audio file
-df_train_frag, df_test_frag = train_test_split(
-    df,
-    test_size=0.2,
-    stratify=df['depression.symptoms'],
-    random_state=SEED)
-df_train_frag, df_val_frag = train_test_split(
-    df_train_frag,
-    test_size=0.1,
-    stratify=df_train_frag['depression.symptoms'],
-    random_state=SEED)
+def create_initial_dataframe():
+    # participants_info
+    participants = pd.read_excel(
+        os.path.join(DATA_PATH, 'PsychiatricDiscourse_participant.data.xlsx')
+    )
+
+    depression_only = participants.loc[
+        (participants['thought.disorder.symptoms'] == 0.) &
+        (participants['depression.symptoms'] != 0.)
+    ]
+    control_group = participants.loc[
+        (participants['depression.symptoms'] == 0.) &
+        (participants['thought.disorder.symptoms'] == 0.)
+    ]
+
+    df = pd.concat([depression_only, control_group])
+    df.drop(['education.level', 'diagnosis', 'thought.disorder.symptoms', 'group'], axis=1, inplace=True)
+    df.sex.replace(['female', 'male'], [0, 1], inplace=True)
+    df.age.fillna(df.age.mean(), inplace=True)
+    df['age'] = (df['age'] - df['age'].mean()) / df['age'].std()
+
+    df['audio'] = df.apply(get_patient_audio, axis=1)
+
+    # exclude patients with no recordings
+    df = df[df.audio.apply(len) > 0]
+
+    df.reset_index(drop=True, inplace=True)
+    df['depressed'] = pd.Series(df['depression.symptoms'] != 0).astype(int)
+
+    return df
+
+
+task_mapping = {
+    'narrative': ['sportsman', 'adventure', 'winterday'],
+    'story': ['present', 'trip', 'party'],
+    'instruction': ['chair', 'table', 'bench']
+}
+
+
+def get_domain_audio(row, domain):
+    """
+    Usage: df['domain_name'] = df.apply(get_domain_audio, axis=1, domain=domain)
+    """
+    files = []
+    for topic in task_mapping[domain]:
+        for file_name in row.audio:
+            if file_name.find(topic) != -1:
+                files.append(file_name)
+
+    return files[0] if len(files) else None
+
+
+# for domain in task_mapping:
+#     df[f'audio.{domain}'] = df.apply(get_domain_audio, axis=1, domain=domain)
 
 
 def get_patient_fragments(row):
     fragments = []
     for audio in row.audio:
         name_prefix = audio.split('.')[0]
-        for filename in os.listdir('spec_images'):
+        for filename in os.listdir(IMAGES_PATH):
             if filename.startswith(name_prefix):
                 fragments.append(filename)
     return fragments
 
 
-for df_split in [df_train_frag, df_test_frag, df_val_frag]:
-    df_split['audio.fragment'] = df_split.apply(get_patient_fragments, axis=1)
+def process_dataframe(df):
+    # get audio fragments
+    df['audio.fragment'] = df.apply(get_patient_fragments, axis=1)
 
-# drop redundant columns
-drop_cols = ['audio', 'audio.narrative', 'audio.story', 'audio.instruction']
-df_train_frag.drop(drop_cols, axis=1, inplace=True)
-df_test_frag.drop(drop_cols, axis=1, inplace=True)
-df_val_frag.drop(drop_cols, axis=1, inplace=True)
+    # drop redundant columns
+    drop_cols = ['audio', 'audio.narrative', 'audio.story', 'audio.instruction']
+    df.drop(drop_cols, axis=1, inplace=True)
 
-# create copy with patient-fragments correspondence for future inference
-df_test_all_fragments = df_test_frag.copy(deep=True)
+    # create dataframe row for each audio fragment
+    df = df.explode('audio.fragment', ignore_index=True)
 
-# create dataframe row for each audio fragment
-df_train_frag = df_train_frag.explode('audio.fragment', ignore_index=True)
-df_test_frag = df_test_frag.explode('audio.fragment', ignore_index=True)
-df_val_frag = df_val_frag.explode('audio.fragment', ignore_index=True)
+    return df
 
-dataframes = dict(zip([TRAIN, TEST, VAL], [df_train_frag, df_test_frag, df_val_frag]))
-for df_label in [TRAIN, TEST, VAL]:
-    dataframes[df_label] = dataframes[df_label]
+
+def split_data(df):
+    """
+    Usage: df_train, df_test, df_val = split_data(df)
+    """
+    df_train, df_test = train_test_split(
+        df,
+        test_size=0.2,
+        stratify=df['depression.symptoms'],
+        random_state=SEED)
+    df_train, df_val = train_test_split(
+        df_train,
+        test_size=0.1,
+        stratify=df_train['depression.symptoms'],
+        random_state=SEED)
+
+    return df_train, df_test, df_val
+
+
+# dataframes = dict(zip([TRAIN, TEST, VAL],
+#                       list(map(process_dataframe, split_data(df)))))
+
 
 # Perform random oversampling until number of depressed and non-depressed patients is equal
 def perform_oversampling(df, column_name):
+    """
+    Usage: df = perform_oversampling(df, 'depressed')
+    """
     ros = RandomOverSampler(random_state=SEED)
     X_resamp, y_resamp = ros.fit_resample(df.drop(column_name, axis=1), df[column_name])
     res = X_resamp.merge(y_resamp, how='left', left_index=True, right_index=True)
     return res
-
-dataframes[TRAIN] = perform_oversampling(df_train_frag, 'depressed')
-dataframes[VAL] = perform_oversampling(df_val_frag, 'depressed')
 
 
 class AudioDataset(Dataset):
@@ -94,43 +159,48 @@ class AudioDataset(Dataset):
         return img, patient_meta, label, depressed
 
 
-data_transforms = {
-    TRAIN: transforms.Compose([
-        transforms.Grayscale(),
-        transforms.ToPILImage(),
-        transforms.ToTensor(),
-        transforms.Resize((80, 80)),
-    ]),
-    TEST: transforms.Compose([
-        transforms.Grayscale(),
-        transforms.ToPILImage(),
-        transforms.ToTensor(),
-        transforms.Resize((80, 80)),
-    ]),
-    VAL: transforms.Compose([
-        transforms.Grayscale(),
-        transforms.ToPILImage(),
-        transforms.ToTensor(),
-        transforms.Resize((80, 80)),
-    ]),
-}
+def create_train_test_eval_processors(dataframes, resize=(80, 80)):
+    """
+    Usage: datasets, dataloaders, dataset_sizes = create_train_test_eval_processors(dataframes)
+    """
+    data_transforms = {
+        TRAIN: transforms.Compose([
+            transforms.Grayscale(),
+            transforms.ToPILImage(),
+            transforms.ToTensor(),
+            transforms.Resize(resize),
+        ]),
+        TEST: transforms.Compose([
+            transforms.Grayscale(),
+            transforms.ToPILImage(),
+            transforms.ToTensor(),
+            transforms.Resize(resize),
+        ]),
+        VAL: transforms.Compose([
+            transforms.Grayscale(),
+            transforms.ToPILImage(),
+            transforms.ToTensor(),
+            transforms.Resize(resize),
+        ]),
+    }
 
-datasets = {
-    TRAIN: AudioDataset(dataframes[TRAIN], 'spec_images', transform=data_transforms[TRAIN]),
-    TEST: AudioDataset(dataframes[TEST], 'spec_images', transform=data_transforms[TEST]),
-    VAL: AudioDataset(dataframes[VAL], 'spec_images', transform=data_transforms[VAL])
-}
+    datasets = {
+        TRAIN: AudioDataset(dataframes[TRAIN], 'spec_images', transform=data_transforms[TRAIN]),
+        TEST: AudioDataset(dataframes[TEST], 'spec_images', transform=data_transforms[TEST]),
+        VAL: AudioDataset(dataframes[VAL], 'spec_images', transform=data_transforms[VAL])
+    }
 
-rng = torch.Generator().manual_seed(SEED)
-dataloaders = {
-    TRAIN: DataLoader(datasets[TRAIN], TRAIN_BATCH_SIZE, shuffle=True, generator=rng),
-    TEST: DataLoader(datasets[TEST], TEST_BATCH_SIZE, shuffle=True, generator=rng),
-    VAL: DataLoader(datasets[VAL], VAL_BATCH_SIZE, shuffle=True, generator=rng)
-}
+    rng = torch.Generator().manual_seed(SEED)
+    dataloaders = {
+        TRAIN: DataLoader(datasets[TRAIN], TRAIN_BATCH_SIZE, shuffle=True, generator=rng),
+        TEST: DataLoader(datasets[TEST], TEST_BATCH_SIZE, shuffle=True, generator=rng),
+        VAL: DataLoader(datasets[VAL], VAL_BATCH_SIZE, shuffle=True, generator=rng)
+    }
 
-dataset_sizes = {
-    TRAIN: len(datasets[TRAIN]),
-    TEST: len(datasets[TEST]),
-    VAL: len(datasets[VAL])
-}
+    dataset_sizes = {
+        TRAIN: len(datasets[TRAIN]),
+        TEST: len(datasets[TEST]),
+        VAL: len(datasets[VAL])
+    }
 
+    return datasets, dataloaders, dataset_sizes
